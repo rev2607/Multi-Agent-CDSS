@@ -1,0 +1,49 @@
+# Medical Multi-Agent CDSS — local demo dependencies
+# Python 3.11+ recommended
+
+# API
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+aiofiles>=24.1.0
+
+# Config & validation
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+
+# Database
+sqlalchemy>=2.0.36
+aiosqlite>=0.20.0
+
+# Vector store
+qdrant-client>=1.12.0
+
+# LLM / Agents
+langgraph>=0.2.50
+langchain-core>=0.3.20
+langchain-google-genai>=2.0.0
+google-generativeai>=0.8.0
+openai>=1.55.0
+httpx>=0.27.0
+
+# RAG / indexing helpers
+llama-index-core>=0.11.0
+rank-bm25>=0.2.2
+numpy>=1.26.0
+scikit-learn>=1.5.0
+
+# Document / multimodal ingestion
+pymupdf>=1.24.0
+unstructured>=0.16.0
+pillow>=10.4.0
+pandas>=2.2.0
+openpyxl>=3.1.0
+python-docx>=1.1.0
+
+# Audio (CPU Whisper)
+openai-whisper>=20240930
+# torch is pulled by whisper; CPU wheel is fine for local demo
+
+# Optional cross-encoder rerank (lightweight when available)
+sentence-transformers>=3.0.0

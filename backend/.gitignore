@@ -1,0 +1,14 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+data/uploads/
+data/qdrant/
+data/kb_files/
+data/cdss.db
+data/*.db
+*.log
