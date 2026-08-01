@@ -1,0 +1,9 @@
+drug_a,drug_b,severity,severity
+Warfarin,Ibuprofen,major,Increased bleeding risk via antiplatelet effect and GI injury
+Lisinopril,Spironolactone,major,Hyperkalemia risk; monitor potassium
+Metformin,Iodinated contrast,major,Hold metformin around contrast if eGFR reduced; lactic acidosis risk
+Sertraline,Tramadol,major,Serotonin syndrome risk
+Atorvastatin,Clarithromycin,major,CYP3A4 inhibition increases statin exposure / myopathy risk
+Amiodarone,Warfarin,major,Potentiates anticoagulation; reduce warfarin dose and monitor INR
+Simvastatin,Amlodipine,moderate,Increased simvastatin levels; dose limit simvastatin
+Ciprofloxacin,Tizanidine,contraindicated,Severe hypotension / sedation
