@@ -7,3 +7,11 @@ Atorvastatin,Clarithromycin,major,CYP3A4 inhibition increases statin exposure / 
 Amiodarone,Warfarin,major,Potentiates anticoagulation; reduce warfarin dose and monitor INR
 Simvastatin,Amlodipine,moderate,Increased simvastatin levels; dose limit simvastatin
 Ciprofloxacin,Tizanidine,contraindicated,Severe hypotension / sedation
+Digoxin,Clarithromycin,major,P-gp inhibition raises digoxin levels — toxicity risk (nausea visual bradycardia arrhythmias); avoid or reduce digoxin and monitor levels
+Digoxin,Erythromycin,major,Macrolide P-gp inhibition increases digoxin exposure / toxicity risk
+Digoxin,Amiodarone,major,Increases digoxin concentration; reduce digoxin dose and monitor
+Digoxin,Verapamil,major,Increases digoxin levels; risk of toxicity and AV block
+Sertraline,Tramadol,major,Serotonin syndrome risk (agitation clonus hyperreflexia fever); avoid or monitor closely; stop agents if toxicity develops
+Warfarin,Ciprofloxacin,major,Fluoroquinolone increases INR / bleeding risk; monitor INR closely or avoid
+Warfarin,Metronidazole,major,Increases INR; bleeding risk — monitor and adjust warfarin
+Warfarin,Trimethoprim-sulfamethoxazole,major,Marked INR elevation risk; prefer alternative antibiotic when possible

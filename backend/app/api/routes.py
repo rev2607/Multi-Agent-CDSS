@@ -281,6 +281,7 @@ def kb_search(q: str, top_k: int = 8):
 
 
 @router.post("/kb/seed")
-def seed_kb():
-    r = get_ingestion_pipeline().seed_sample_knowledge()
+def seed_kb(force: bool = False):
+    """Seed sample KB. Pass force=true to re-index samples even if store is non-empty."""
+    r = get_ingestion_pipeline().seed_sample_knowledge(force=force)
     return r

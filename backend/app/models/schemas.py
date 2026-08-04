@@ -72,6 +72,7 @@ class ClinicalReport(BaseModel):
     """Structured clinical report produced by a specialized agent."""
 
     specialist: SpecialistType
+    routed_to: str = ""  # e.g. "Routed to: Clinical Pharmacology" — set by pipeline
     chief_complaint: str = ""
     case_summary: str = ""
     key_findings: List[str] = Field(default_factory=list)

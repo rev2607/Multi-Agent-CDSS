@@ -111,6 +111,23 @@ class BaseSpecialistAgent:
         return case_blob[:500]
 
     def generate_report(self, case: Dict[str, Any]) -> ClinicalReport:
+        logger.info(
+            "generate_report: agent_class=%s specialist=%s case_id=%s",
+            self.__class__.__name__,
+            self.specialist.value,
+            case.get("id"),
+        )
+        # Absolute safety: Cardiology agent must not precompute ACS scores on non-ACS cases
+        if self.specialist == SpecialistType.cardiology:
+            from app.agents.case_patterns import is_acs_presentation, case_text_blob
+
+            if not is_acs_presentation(case_text_blob(case))[0]:
+                logger.error(
+                    "generate_report: CardiologyAgent invoked on non-ACS case_id=%s — "
+                    "will omit HEART/TIMI and sanitize framing",
+                    case.get("id"),
+                )
+
         retrieval = self.retrieve(case)
         hits = retrieval["hits"]
         evidence = self.retriever.to_evidence(
@@ -141,28 +158,55 @@ class BaseSpecialistAgent:
         retrieval: Dict[str, Any],
         extras: Dict[str, Any],
     ) -> ClinicalReport:
-        risk_scores = self._parse_risk_scores(data, extras)
+        allow_acs = self._acs_scores_allowed_for_case(case, extras)
+        risk_scores = self._parse_risk_scores(data, extras, allow_acs=allow_acs)
         image_findings = self._parse_image_findings(data, extras)
         differential = self._parse_differential(data)
 
+        case_summary = str(data.get("case_summary") or data.get("summary") or "")
+        assessment = str(data.get("assessment") or "")
+        reasoning = str(data.get("reasoning") or "")
+        if self.specialist != SpecialistType.cardiology:
+            case_summary = self._sanitize_non_cardio_framing(case_summary)
+            assessment = self._sanitize_non_cardio_framing(assessment)
+            reasoning = self._sanitize_non_cardio_framing(reasoning)
+        elif not allow_acs:
+            # Cardiology specialty but non-ACS dominant problem — strip ACS score chatter
+            case_summary = self._strip_acs_score_mentions(case_summary)
+            assessment = self._strip_acs_score_mentions(assessment)
+            reasoning = self._strip_acs_score_mentions(reasoning)
+
+        routed_label = {
+            SpecialistType.cardiology: "Cardiology",
+            SpecialistType.dermatology: "Dermatology",
+            SpecialistType.neurology: "Neurology",
+            SpecialistType.general_internal_medicine: "General Internal Medicine",
+            SpecialistType.clinical_pharmacology: "Clinical Pharmacology",
+        }.get(self.specialist, self.specialist.value)
+        routed_to = f"Routed to: {routed_label}"
+
         return ClinicalReport(
             specialist=self.specialist,
+            routed_to=routed_to,
             chief_complaint=str(data.get("chief_complaint") or ""),
-            case_summary=str(data.get("case_summary") or data.get("summary") or ""),
+            case_summary=case_summary,
             key_findings=list(data.get("key_findings") or []),
             differential_diagnosis=differential,
-            assessment=str(data.get("assessment") or ""),
+            assessment=assessment,
             recommendations=list(data.get("recommendations") or []),
             red_flags=list(data.get("red_flags") or []),
             evidence=evidence,
             risk_scores=risk_scores,
             image_findings=image_findings,
-            reasoning=str(data.get("reasoning") or ""),
+            reasoning=reasoning,
             retrieval_path=path,
             raw={
                 "llm": data,
                 "retrieval_meta": {k: v for k, v in retrieval.items() if k != "hits"},
                 "precomputed": extras,
+                "acs_scores_allowed": allow_acs,
+                "routed_specialist": self.specialist.value,
+                "routed_to": routed_to,
             },
         )
 
@@ -239,15 +283,33 @@ class BaseSpecialistAgent:
         corrected.raw["knowledge_written"] = knowledge_written
         return corrected
 
+    def _lane_discipline_block(self) -> str:
+        """Hard framing rules injected into every specialist report prompt."""
+        label = self.display_name
+        if self.specialist == SpecialistType.cardiology:
+            return (
+                f"IDENTITY: You are the {label}. Frame the report as a cardiology evaluation "
+                "only when the case is primarily cardiac. If the dominant problem is drug "
+                "toxicity or SCAR, do not invent HEART/TIMI and do not force an ACS workup."
+            )
+        return (
+            f"IDENTITY: You are the {label}. This case was routed to you — NOT to Cardiology.\n"
+            f"- Open and center the report as a {label} assessment.\n"
+            '- NEVER write "cardiology assessment", "cardiac risk stratification", or similar.\n'
+            "- NEVER invent or discuss HEART score, TIMI score, or ACS chest-pain scores.\n"
+            "- Secondary vital-sign effects (tachycardia, mild demand ischemia) may be mentioned "
+            "briefly as supportive context only — they must not dominate the differential."
+        )
+
     def _report_system_prompt(self) -> str:
         return (
             f"You are the {self.display_name} in a multi-agent clinical decision support system. "
             f"Focus: {self.system_focus}\n"
+            f"{self._lane_discipline_block()}\n"
             "Produce structured decision support for a licensed clinician. "
             "Never claim to replace clinical judgment. "
             "Use only the retrieved evidence provided (already specialty-filtered). "
-            "When uploaded images/PDFs are present, cite them explicitly "
-            "(e.g. 'ECG image analysis shows…' / 'Uploaded PDF documents…'). "
+            "When uploaded images/PDFs are present, cite them explicitly. "
             "Rank differential diagnoses by likelihood; down-rank low-probability alternatives "
             "when high-risk objective data are present. "
             "Respond with JSON only."
@@ -273,6 +335,7 @@ class BaseSpecialistAgent:
             )
 
         return (
+            f"{self._lane_discipline_block()}\n\n"
             f"Case:\n{self.build_case_blob(case)[:6500]}\n\n"
             f"Retrieval path: {path}\n"
             f"Evidence (top specialty-matched, deduplicated):\n"
@@ -285,42 +348,158 @@ class BaseSpecialistAgent:
             "{diagnosis, likelihood: leading|likely|possible|unlikely, rationale}),\n"
             "assessment, recommendations (array), red_flags (array), reasoning,\n"
             "image_findings (array of {source, label, summary}),\n"
-            "risk_scores (array of {name, score, max_score, risk_band, detail})."
+            "risk_scores (array of {name, score, max_score, risk_band, detail}; "
+            "empty unless specialty-appropriate — never HEART/TIMI unless primary ACS "
+            "and you are the Cardiology Agent)."
         )
 
+    # ACS scores only when Cardiology + primary ACS evaluation
+    _ACS_SCORE_NAMES = frozenset(
+        {
+            "heart",
+            "timi",
+            "timi (ua/nstemi)",
+            "timi ua/nstemi",
+            "grace",
+            "heart score",
+            "timi score",
+        }
+    )
+
+    def _is_acs_score_name(self, name: str) -> bool:
+        n = (name or "").strip().lower()
+        if n in self._ACS_SCORE_NAMES:
+            return True
+        return any(token in n for token in ("heart score", "timi", "grace score"))
+
+    def _acs_scores_allowed_for_case(
+        self, case: Dict[str, Any], extras: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """HEART/TIMI only for Cardiology on primary ACS workups."""
+        if self.specialist != SpecialistType.cardiology:
+            return False
+        extras = extras or {}
+        if "acs_scores_applicable" in extras:
+            return bool(extras.get("acs_scores_applicable"))
+        try:
+            from app.agents.case_patterns import is_primary_acs_evaluation
+
+            return is_primary_acs_evaluation(case)
+        except Exception:
+            return False
+
+    def _sanitize_non_cardio_framing(self, text: str) -> str:
+        """Remove mistaken cardiology framing from non-cardiology reports."""
+        if not text:
+            return text
+        out = text
+        out = re.sub(
+            r"(?i)\bthe\s+cardiology\s+agent(?:'s|\s+s)?\s+role\b[^.!?]*[.!?]?",
+            f"The {self.display_name}'s role is specialty-appropriate decision support.",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bfrom\s+a\s+cardiology\s+perspective\b",
+            f"from a {self.display_name} perspective",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bcardiology\s+agent\b",
+            self.display_name,
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bcardiology\s+assessment\b",
+            f"{self.display_name} assessment",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bcardiology\s+(?:evaluation|workup|consult|consultation)\b",
+            f"{self.display_name} evaluation",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bas\s+a\s+cardiology\s+(?:assessment|evaluation|workup)\b",
+            f"as a {self.display_name} assessment",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\brule\s+out\s+ACS\b",
+            "manage the primary toxicity/drug-safety problem",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bcardiac\s+risk\s+stratification\b",
+            "specialty-appropriate risk assessment",
+            out,
+        )
+        out = self._strip_acs_score_mentions(out)
+        return out
+
+    @staticmethod
+    def _strip_acs_score_mentions(text: str) -> str:
+        if not text:
+            return text
+        out = text
+        out = re.sub(
+            r"(?i)\b(?:the\s+)?HEART\s+score\b[^.!?]*[.!?]?",
+            "",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\b(?:the\s+)?TIMI(?:\s+score|\s*\(UA/NSTEMI\))?\b[^.!?]*[.!?]?",
+            "",
+            out,
+        )
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        out = re.sub(r"\n{3,}", "\n\n", out)
+        return out.strip()
+
     def _parse_risk_scores(
-        self, data: Dict[str, Any], extras: Dict[str, Any]
+        self,
+        data: Dict[str, Any],
+        extras: Dict[str, Any],
+        *,
+        allow_acs: Optional[bool] = None,
     ) -> List[RiskScoreItem]:
         items: List[RiskScoreItem] = []
+        if allow_acs is None:
+            allow_acs = self.specialist == SpecialistType.cardiology
+
+        def _append_from_dict(rs: Dict[str, Any]) -> None:
+            name = str(rs.get("name") or "score")
+            if not allow_acs and self._is_acs_score_name(name):
+                logger.info(
+                    "Stripping ACS risk score %r (specialist=%s allow_acs=%s)",
+                    name,
+                    self.specialist.value,
+                    allow_acs,
+                )
+                return
+            items.append(
+                RiskScoreItem(
+                    name=name,
+                    score=rs.get("score"),
+                    max_score=rs.get("max_score") or rs.get("max"),
+                    risk_band=str(rs.get("risk_band") or ""),
+                    detail=str(rs.get("detail") or rs.get("note") or ""),
+                    components=dict(rs.get("components") or {}),
+                )
+            )
+
         # Prefer precomputed
         for rs in extras.get("risk_scores") or []:
             if isinstance(rs, RiskScoreItem):
+                if not allow_acs and self._is_acs_score_name(rs.name):
+                    continue
                 items.append(rs)
             elif isinstance(rs, dict):
-                items.append(
-                    RiskScoreItem(
-                        name=str(rs.get("name") or "score"),
-                        score=rs.get("score"),
-                        max_score=rs.get("max_score") or rs.get("max"),
-                        risk_band=str(rs.get("risk_band") or ""),
-                        detail=str(rs.get("detail") or rs.get("note") or ""),
-                        components=dict(rs.get("components") or {}),
-                    )
-                )
+                _append_from_dict(rs)
         if items:
             return items
         for rs in data.get("risk_scores") or []:
             if isinstance(rs, dict):
-                items.append(
-                    RiskScoreItem(
-                        name=str(rs.get("name") or "score"),
-                        score=rs.get("score"),
-                        max_score=rs.get("max_score") or rs.get("max"),
-                        risk_band=str(rs.get("risk_band") or ""),
-                        detail=str(rs.get("detail") or ""),
-                        components=dict(rs.get("components") or {}),
-                    )
-                )
+                _append_from_dict(rs)
         return items
 
     def _parse_image_findings(

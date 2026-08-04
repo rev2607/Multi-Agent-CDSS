@@ -50,7 +50,6 @@ function MultiFilePicker({ files, onChange, disabled, id = "case-attachments" })
 
   function handlePick(e) {
     addFiles(e.target.files);
-    // Allow selecting the same file(s) again later
     e.target.value = "";
   }
 
@@ -151,6 +150,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState("new"); // new | view
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const refreshList = useCallback(async () => {
     const list = await api.listCases();
@@ -163,6 +163,7 @@ export default function App() {
     setSelectedId(id);
     setMode("view");
     setExtraFiles([]);
+    setSidebarOpen(false);
   }, []);
 
   useEffect(() => {
@@ -266,37 +267,52 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <button
+        type="button"
+        className={`sidebar-overlay ${sidebarOpen ? "visible" : ""}`}
+        aria-label="Close menu"
+        onClick={() => setSidebarOpen(false)}
+      />
+
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand">
-          <h1>Medical Multi-Agent CDSS</h1>
+          <div className="brand-mark">
+            <span className="brand-logo">CD</span>
+            <h1>Medical Multi-Agent CDSS</h1>
+          </div>
           <p>Local demo · Superior router → one specialist</p>
         </div>
+
         <div className="health">
+          <span className={`health-dot ${health?.status === "ok" ? "live" : ""}`} />
           {health ? (
             <>
-              status: {health.status} · llm: {health.llm_provider} · kb:{" "}
-              {health.kb_points}
+              {health.status} · llm: {health.llm_provider} · kb: {health.kb_points}
             </>
           ) : (
             "connecting…"
           )}
         </div>
-        <button
-          className="primary"
-          type="button"
-          onClick={() => {
-            setMode("new");
-            setSelectedId(null);
-            setCaseDetail(null);
-          }}
-        >
-          + New case
-        </button>
+
+        <div className="sidebar-actions">
+          <button
+            className="primary"
+            type="button"
+            onClick={() => {
+              setMode("new");
+              setSelectedId(null);
+              setCaseDetail(null);
+              setSidebarOpen(false);
+            }}
+          >
+            + New case
+          </button>
+        </div>
+
+        <div className="sidebar-section-label">Cases</div>
         <div className="case-list">
           {cases.length === 0 && (
-            <div className="empty" style={{ padding: "1rem 0" }}>
-              No cases yet
-            </div>
+            <div className="empty-inline">No cases yet</div>
           )}
           {cases.map((c) => (
             <button
@@ -309,266 +325,335 @@ export default function App() {
               <div className="meta">
                 <span className={`badge ${statusBadge(c.status)}`}>
                   {c.status}
-                </span>{" "}
-                {formatSpecialist(c.assigned_specialist)}
+                </span>
+                <span>{formatSpecialist(c.assigned_specialist)}</span>
               </div>
             </button>
           ))}
         </div>
       </aside>
 
-      <main className="main">
-        {error && <div className="error">{error}</div>}
+      <div className="main-wrap">
+        <header className="topbar">
+          <button
+            type="button"
+            className="icon-btn ghost"
+            aria-label="Open menu"
+            onClick={() => setSidebarOpen(true)}
+          >
+            ☰
+          </button>
+          <span className="topbar-title">CDSS</span>
+        </header>
 
-        {mode === "new" && (
-          <form className="panel" onSubmit={handleCreateAndProcess}>
-            <h2>Submit clinical case</h2>
-            <div className="field">
-              <label>Title</label>
-              <input
-                value={form.title}
-                onChange={(e) => setForm({ ...form, title: e.target.value })}
-                placeholder="e.g. 62M chest pain and dyspnea"
-              />
-            </div>
-            <div className="grid-2">
-              <div className="field">
-                <label>Patient context</label>
-                <textarea
-                  value={form.patient_context}
-                  onChange={(e) =>
-                    setForm({ ...form, patient_context: e.target.value })
-                  }
-                  placeholder="Age, sex, PMH, meds, allergies…"
-                />
-              </div>
-              <div className="field">
-                <label>Notes</label>
-                <textarea
-                  value={form.notes}
-                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                  placeholder="Clinician notes / questions"
-                />
-              </div>
-            </div>
-            <div className="field">
-              <label>Clinical presentation</label>
-              <textarea
-                style={{ minHeight: 140 }}
-                value={form.clinical_text}
-                onChange={(e) =>
-                  setForm({ ...form, clinical_text: e.target.value })
-                }
-                placeholder="HPI, exam, labs, imaging summary…"
-                required
-              />
-            </div>
-            <div className="field">
-              <label>Attachments (any number — PDF, images, audio, CSV…)</label>
-              <MultiFilePicker
-                files={files}
-                onChange={setFiles}
-                disabled={busy}
-                id="new-case-attachments"
-              />
-            </div>
-            <div className="row">
-              <button className="primary" type="submit" disabled={busy}>
-                {busy && <span className="spinner" />}
-                Route & generate report
-                {files.length > 0 ? ` (${files.length} file${files.length === 1 ? "" : "s"})` : ""}
-              </button>
-            </div>
-          </form>
-        )}
+        <main className="main">
+          {error && <div className="error">{error}</div>}
 
-        {mode === "view" && caseDetail && (
-          <>
-            <div className="panel">
-              <div className="row" style={{ justifyContent: "space-between" }}>
+          {mode === "new" && (
+            <form className="panel" onSubmit={handleCreateAndProcess}>
+              <div className="panel-header">
                 <div>
-                  <h2 style={{ marginBottom: 4 }}>{caseDetail.title}</h2>
-                  <div className="row">
-                    <span className={`badge ${statusBadge(caseDetail.status)}`}>
-                      {caseDetail.status}
-                    </span>
-                    <span className="badge">
-                      {formatSpecialist(caseDetail.assigned_specialist)}
-                    </span>
-                    {report?.retrieval_path && (
-                      <span className="badge">{report.retrieval_path}</span>
-                    )}
-                  </div>
+                  <h2>Submit clinical case</h2>
+                  <p className="panel-subtitle">
+                    Route to one specialist and generate a structured report
+                  </p>
                 </div>
-              </div>
-              {caseDetail.routing_rationale && (
-                <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
-                  <strong>Routing:</strong> {caseDetail.routing_rationale}
-                </p>
-              )}
-              {caseDetail.clinical_text && (
-                <div className="report-section">
-                  <h3>Case text</h3>
-                  <p style={{ whiteSpace: "pre-wrap" }}>{caseDetail.clinical_text}</p>
-                </div>
-              )}
-              <div className="report-section">
-                <h3>
-                  Attachments
-                  {caseDetail.attachments?.length
-                    ? ` (${caseDetail.attachments.length})`
-                    : ""}
-                </h3>
-                {caseDetail.attachments?.length > 0 ? (
-                  <ul>
-                    {caseDetail.attachments.map((a) => (
-                      <li key={a.id}>
-                        {a.filename}{" "}
-                        <span className="badge">{a.modality}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p style={{ color: "var(--muted)", margin: 0 }}>No attachments yet.</p>
-                )}
               </div>
 
-              <form onSubmit={handleAddAttachments} style={{ marginTop: "0.75rem" }}>
+              <div className="field">
+                <label>Title</label>
+                <input
+                  value={form.title}
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  placeholder="e.g. 62M chest pain and dyspnea"
+                />
+              </div>
+              <div className="grid-2">
                 <div className="field">
-                  <label>Add more attachments</label>
-                  <MultiFilePicker
-                    files={extraFiles}
-                    onChange={setExtraFiles}
-                    disabled={busy}
-                    id="existing-case-attachments"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={busy || extraFiles.length === 0}
-                >
-                  {busy && <span className="spinner" />}
-                  Upload {extraFiles.length > 0 ? `${extraFiles.length} ` : ""}
-                  file{extraFiles.length === 1 ? "" : "s"}
-                </button>
-              </form>
-            </div>
-
-            {report && (
-              <div className="panel">
-                <h2>Structured clinical report</h2>
-                <Section title="Chief complaint" body={report.chief_complaint} />
-                <Section title="Case summary" body={report.case_summary} />
-                <ListSection title="Key findings" items={report.key_findings} />
-
-                {report.risk_scores?.length > 0 && (
-                  <div className="report-section">
-                    <h3>Risk scores</h3>
-                    <div className="risk-grid">
-                      {report.risk_scores.map((rs, i) => (
-                        <div className="risk-card" key={rs.name || i}>
-                          <div className="risk-name">{rs.name}</div>
-                          <div className="risk-value">
-                            {rs.score != null ? rs.score : "—"}
-                            {rs.max_score != null ? ` / ${rs.max_score}` : ""}
-                          </div>
-                          {rs.risk_band && (
-                            <span className={`badge ${riskBandClass(rs.risk_band)}`}>
-                              {rs.risk_band}
-                            </span>
-                          )}
-                          {rs.detail && (
-                            <p className="risk-detail">{rs.detail}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {report.image_findings?.length > 0 && (
-                  <div className="report-section">
-                    <h3>Image / document findings</h3>
-                    {report.image_findings.map((im, i) => (
-                      <div className="evidence" key={(im.source || "") + i}>
-                        <div>
-                          <strong>{im.label || "Uploaded image"}</strong>
-                          {im.source ? (
-                            <span className="score"> · {im.source}</span>
-                          ) : null}
-                        </div>
-                        <div style={{ whiteSpace: "pre-wrap" }}>{im.summary}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <DifferentialSection items={report.differential_diagnosis} />
-                <Section title="Assessment" body={report.assessment} />
-                <ListSection title="Recommendations" items={report.recommendations} />
-                <ListSection title="Red flags" items={report.red_flags} />
-                <Section title="Reasoning" body={report.reasoning} />
-                {report.evidence?.length > 0 && (
-                  <div className="report-section">
-                    <h3>Evidence (top specialty-matched)</h3>
-                    {report.evidence.slice(0, 5).map((e) => (
-                      <div className="evidence" key={e.source_id + e.snippet.slice(0, 20)}>
-                        <div>
-                          <strong>{e.title || e.source_id}</strong>{" "}
-                          <span className="score">score {Number(e.score).toFixed(3)}</span>
-                        </div>
-                        <div>{e.snippet}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-                  {report.limitations}
-                </p>
-              </div>
-            )}
-
-            {caseDetail.report && (
-              <form className="panel" onSubmit={handleFeedback}>
-                <h2>Doctor feedback (targeted correction)</h2>
-                <div className="field">
-                  <label>Text feedback</label>
+                  <label>Patient context</label>
                   <textarea
-                    value={feedback}
-                    onChange={(e) => setFeedback(e.target.value)}
-                    placeholder="e.g. Please emphasize renal dosing and remove suggestion X…"
-                    required
+                    value={form.patient_context}
+                    onChange={(e) =>
+                      setForm({ ...form, patient_context: e.target.value })
+                    }
+                    placeholder="Age, sex, PMH, meds, allergies…"
                   />
                 </div>
+                <div className="field">
+                  <label>Notes</label>
+                  <textarea
+                    value={form.notes}
+                    onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                    placeholder="Clinician notes / questions"
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label>Clinical presentation</label>
+                <textarea
+                  className="clinical-area"
+                  style={{ minHeight: 140 }}
+                  value={form.clinical_text}
+                  onChange={(e) =>
+                    setForm({ ...form, clinical_text: e.target.value })
+                  }
+                  placeholder="HPI, exam, labs, imaging summary…"
+                  required
+                />
+              </div>
+              <div className="field">
+                <label>Attachments (any number — PDF, images, audio, CSV…)</label>
+                <MultiFilePicker
+                  files={files}
+                  onChange={setFiles}
+                  disabled={busy}
+                  id="new-case-attachments"
+                />
+              </div>
+              <div className="row">
                 <button className="primary" type="submit" disabled={busy}>
                   {busy && <span className="spinner" />}
-                  Apply feedback
+                  Route & generate report
+                  {files.length > 0
+                    ? ` (${files.length} file${files.length === 1 ? "" : "s"})`
+                    : ""}
                 </button>
-                {caseDetail.feedback?.length > 0 && (
-                  <div className="report-section" style={{ marginTop: "1rem" }}>
-                    <h3>Feedback history</h3>
-                    <ul>
-                      {caseDetail.feedback.map((f) => (
-                        <li key={f.id}>
-                          {f.text}{" "}
-                          {f.applied && <span className="badge ok">applied</span>}
-                          {f.knowledge_written && (
-                            <span className="badge">kb write-back</span>
-                          )}
+              </div>
+            </form>
+          )}
+
+          {mode === "view" && caseDetail && (
+            <>
+              <div className="panel">
+                <div className="panel-header">
+                  <div>
+                    <h2>{caseDetail.title}</h2>
+                    <div className="badge-row" style={{ marginTop: "0.55rem" }}>
+                      <span className={`badge ${statusBadge(caseDetail.status)}`}>
+                        {caseDetail.status}
+                      </span>
+                      {caseDetail.assigned_specialist && (
+                        <span className="badge ok">
+                          Routed to: {formatSpecialist(caseDetail.assigned_specialist)}
+                        </span>
+                      )}
+                      {report?.retrieval_path && (
+                        <span className="badge">{report.retrieval_path}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {caseDetail.routing_rationale && (
+                  <p className="routing-line">
+                    <strong>Routed to:</strong>{" "}
+                    {formatSpecialist(caseDetail.assigned_specialist) || "—"}
+                    {caseDetail.routing_rationale && (
+                      <>
+                        {" — "}
+                        {caseDetail.routing_rationale.replace(
+                          /^Routed to:\s*[^—–-]+[—–-]\s*/i,
+                          ""
+                        )}
+                      </>
+                    )}
+                  </p>
+                )}
+
+                {caseDetail.clinical_text && (
+                  <div className="report-section">
+                    <h3>Case text</h3>
+                    <p className="prewrap">{caseDetail.clinical_text}</p>
+                  </div>
+                )}
+
+                <div className="report-section">
+                  <h3>
+                    Attachments
+                    {caseDetail.attachments?.length
+                      ? ` (${caseDetail.attachments.length})`
+                      : ""}
+                  </h3>
+                  {caseDetail.attachments?.length > 0 ? (
+                    <ul className="attach-list">
+                      {caseDetail.attachments.map((a) => (
+                        <li key={a.id}>
+                          <span>{a.filename}</span>
+                          <span className="badge">{a.modality}</span>
                         </li>
                       ))}
                     </ul>
-                  </div>
-                )}
-              </form>
-            )}
-          </>
-        )}
+                  ) : (
+                    <p className="muted-text">No attachments yet.</p>
+                  )}
+                </div>
 
-        {mode === "view" && !caseDetail && (
-          <div className="empty">Select a case from the sidebar</div>
-        )}
-      </main>
+                <form onSubmit={handleAddAttachments}>
+                  <div className="field">
+                    <label>Add more attachments</label>
+                    <MultiFilePicker
+                      files={extraFiles}
+                      onChange={setExtraFiles}
+                      disabled={busy}
+                      id="existing-case-attachments"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="ghost"
+                    disabled={busy || extraFiles.length === 0}
+                  >
+                    {busy && <span className="spinner" />}
+                    Upload {extraFiles.length > 0 ? `${extraFiles.length} ` : ""}
+                    file{extraFiles.length === 1 ? "" : "s"}
+                  </button>
+                </form>
+              </div>
+
+              {report && (
+                <div className="panel">
+                  <div className="panel-header">
+                    <div>
+                      <h2>Structured clinical report</h2>
+                      <div className="badge-row" style={{ marginTop: "0.55rem" }}>
+                        <span className="badge ok">
+                          {report.routed_to ||
+                            (caseDetail.assigned_specialist
+                              ? `Routed to: ${formatSpecialist(caseDetail.assigned_specialist)}`
+                              : "Routed to: —")}
+                        </span>
+                        {report.specialist && (
+                          <span className="badge">
+                            Agent: {formatSpecialist(report.specialist)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <Section title="Chief complaint" body={report.chief_complaint} />
+                  <Section title="Case summary" body={report.case_summary} />
+                  <ListSection title="Key findings" items={report.key_findings} />
+
+                  {report.risk_scores?.length > 0 && (
+                    <div className="report-section">
+                      <h3>Risk scores</h3>
+                      <div className="risk-grid">
+                        {report.risk_scores.map((rs, i) => (
+                          <div className="risk-card" key={rs.name || i}>
+                            <div className="risk-name">{rs.name}</div>
+                            <div className="risk-value">
+                              {rs.score != null ? rs.score : "—"}
+                              {rs.max_score != null ? ` / ${rs.max_score}` : ""}
+                            </div>
+                            {rs.risk_band && (
+                              <span className={`badge ${riskBandClass(rs.risk_band)}`}>
+                                {rs.risk_band}
+                              </span>
+                            )}
+                            {rs.detail && (
+                              <p className="risk-detail">{rs.detail}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {report.image_findings?.length > 0 && (
+                    <div className="report-section">
+                      <h3>Image / document findings</h3>
+                      {report.image_findings.map((im, i) => (
+                        <div className="evidence" key={(im.source || "") + i}>
+                          <div>
+                            <strong>{im.label || "Uploaded image"}</strong>
+                            {im.source ? (
+                              <span className="score"> · {im.source}</span>
+                            ) : null}
+                          </div>
+                          <div className="prewrap">{im.summary}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <DifferentialSection items={report.differential_diagnosis} />
+                  <Section title="Assessment" body={report.assessment} />
+                  <ListSection title="Recommendations" items={report.recommendations} />
+                  <ListSection title="Red flags" items={report.red_flags} />
+                  <Section title="Reasoning" body={report.reasoning} />
+                  {report.evidence?.length > 0 && (
+                    <div className="report-section">
+                      <h3>Evidence (top specialty-matched)</h3>
+                      {report.evidence.slice(0, 5).map((e) => (
+                        <div
+                          className="evidence"
+                          key={e.source_id + e.snippet.slice(0, 20)}
+                        >
+                          <div>
+                            <strong>{e.title || e.source_id}</strong>{" "}
+                            <span className="score">
+                              score {Number(e.score).toFixed(3)}
+                            </span>
+                          </div>
+                          <div>{e.snippet}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="limitations">{report.limitations}</p>
+                </div>
+              )}
+
+              {caseDetail.report && (
+                <form className="panel" onSubmit={handleFeedback}>
+                  <div className="panel-header">
+                    <div>
+                      <h2>Doctor feedback</h2>
+                      <p className="panel-subtitle">
+                        Targeted correction by the same specialist agent
+                      </p>
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label>Text feedback</label>
+                    <textarea
+                      value={feedback}
+                      onChange={(e) => setFeedback(e.target.value)}
+                      placeholder="e.g. Please emphasize renal dosing and remove suggestion X…"
+                      required
+                    />
+                  </div>
+                  <button className="primary" type="submit" disabled={busy}>
+                    {busy && <span className="spinner" />}
+                    Apply feedback
+                  </button>
+                  {caseDetail.feedback?.length > 0 && (
+                    <div className="report-section" style={{ marginTop: "1.15rem" }}>
+                      <h3>Feedback history</h3>
+                      <ul className="history-list">
+                        {caseDetail.feedback.map((f) => (
+                          <li key={f.id}>
+                            {f.text}{" "}
+                            {f.applied && <span className="badge ok">applied</span>}
+                            {f.knowledge_written && (
+                              <span className="badge">kb write-back</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </form>
+              )}
+            </>
+          )}
+
+          {mode === "view" && !caseDetail && (
+            <div className="empty">Select a case from the sidebar</div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
@@ -578,7 +663,7 @@ function Section({ title, body }) {
   return (
     <div className="report-section">
       <h3>{title}</h3>
-      <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{body}</p>
+      <p className="prewrap">{body}</p>
     </div>
   );
 }

@@ -18,12 +18,15 @@ SPECIALTY_KEYWORDS: Dict[str, Set[str]] = {
         "myocardial", "infarction", "chest pain", "heart", "cardiac", "coronary",
         "timi", "heart score", "st depression", "st elevation", "pci", "cabg",
         "aspirin", "heparin", "antiplatelet", "arrhythmia", "cardiology",
-        "diaphoresis", "cardiogenic", "unstable angina",
+        "diaphoresis", "cardiogenic", "unstable angina", "reperfusion",
     },
     "dermatology": {
         "rash", "dermat", "lesion", "melanoma", "psoriasis", "eczema", "skin",
         "pruritus", "urticaria", "biopsy", "cellulitis", "dermatology",
-        "silvery scale", "abcde",
+        "silvery scale", "abcde", "sjs", "sjs/ten", "stevens-johnson", "stevens johnson",
+        "toxic epidermal necrolysis", "dress", "agep", "mucosal", "blister",
+        "desquamat", "carbamazepine", "scorten", "cutaneous", "pustulosis",
+        "epidermal necrolysis", "drug rash", "erysipelas",
     },
     "neurology": {
         "stroke", "seizure", "migraine", "neurolog", "headache", "hemiparesis",
@@ -34,7 +37,13 @@ SPECIALTY_KEYWORDS: Dict[str, Set[str]] = {
     "clinical_pharmacology": {
         "drug interaction", "dosing", "pharmacolog", "contraindicat", "adverse",
         "warfarin", "polypharmacy", "side effect", "qt prolong", "inr",
-        "renal dosing", "serotonin", "drug list", "medication",
+        "renal dosing", "serotonin", "serotonin syndrome", "sertraline", "tramadol",
+        "clonus", "hyperreflexia", "drug list", "medication", "digoxin",
+        "digitalis", "clarithromycin", "macrolide", "toxicity", "cyp3a4",
+        "p-glycoprotein", "p-gp", "tdm", "therapeutic drug", "supratherapeutic",
+        "drug safety", "overdose", "antidote", "fab", "interaction",
+        "xanthopsia", "drug-drug", "adverse drug", "toxidrome", "lithium",
+        "anticholinergic", "cyproheptadine", "ssri",
     },
     "general_internal_medicine": {
         "sepsis", "hyponatremia", "diabetes", "metabolic", "fever", "infection",
@@ -42,15 +51,27 @@ SPECIALTY_KEYWORDS: Dict[str, Set[str]] = {
     },
 }
 
+# Specialties that must heavily penalize pure cardiology ACS snippets
+_ANTI_CARDIO_SPECIALTIES = frozenset(
+    {"dermatology", "clinical_pharmacology", "neurology"}
+)
+
 # Exclusive section headers that mark sample KB specialty slices
 SECTION_MARKERS: Dict[str, Tuple[str, ...]] = {
     "cardiology": ("## cardiology", "cardiology"),
-    "dermatology": ("## dermatology", "dermatology", "melanoma abcde"),
+    "dermatology": (
+        "## dermatology",
+        "dermatology",
+        "melanoma abcde",
+        "sjs/ten",
+        "dress",
+    ),
     "neurology": ("## neurology", "neurology", "stroke fast"),
     "clinical_pharmacology": (
         "## clinical pharmacology",
         "drug list",
         "drug safety",
+        "digoxin",
     ),
     "general_internal_medicine": (
         "## general internal medicine",
@@ -427,7 +448,7 @@ def filter_and_rank_hits(
         declared = _declared_specialty(meta, text)
         spec_rel = specialty_relevance(text, specialty) if specialty else 0.4
         if declared == specialty:
-            spec_rel = max(spec_rel, 0.85)
+            spec_rel = max(spec_rel, 0.9)
         q_rel = query_overlap(query, text)
 
         base = max(float(h.dense_score or 0.0), float(h.score or 0.0) * 8.0)
@@ -437,6 +458,8 @@ def filter_and_rank_hits(
         st = str(meta.get("source_type") or "").lower()
         mod = str(meta.get("modality") or "").lower()
         title = str(meta.get("title") or meta.get("filename") or "").lower()
+        cardio_hits = specialty_keyword_hits(text, "cardiology")
+        own_hits = specialty_keyword_hits(text, specialty) if specialty else 0
 
         # (1) Current case attachments / images — highest priority
         if is_current:
@@ -448,28 +471,50 @@ def filter_and_rank_hits(
         elif is_attach and case_id is None:
             source_bonus += 0.1
 
-        # (2) Specialty-matched KB
+        # (2) Specialty-matched KB — strong boost
         if specialty and declared == specialty:
-            source_bonus += 0.35
+            source_bonus += 0.45
         elif specialty and declared and declared != specialty:
-            source_bonus -= 0.55  # should rarely reach here if hard filter on
+            source_bonus -= 0.70  # should rarely reach here if hard filter on
 
         tags = _meta_tags(meta)
         if specialty and specialty in tags:
-            source_bonus += 0.15
+            source_bonus += 0.20
 
-        # (3) Penalize untagged generic sample when weak specialty match
+        # (3) Penalize untagged / mixed generic sample when specialty should dominate
         if specialty and specialty != "general_internal_medicine":
-            if st == "sample" or "clinical_snippets" in title:
-                if declared is None and spec_rel < 0.35:
-                    source_bonus -= 0.4
+            is_sampleish = st == "sample" or "clinical_snippets" in title
+            if is_sampleish:
                 if declared == specialty:
-                    source_bonus += 0.1
+                    source_bonus += 0.20
+                elif declared is None and spec_rel < 0.40:
+                    # Generic mixed snippet without clear specialty ownership
+                    source_bonus -= 0.55
+                elif declared is None and spec_rel >= 0.40:
+                    source_bonus -= 0.15  # still prefer tagged specialty sections
+                elif declared and declared != specialty:
+                    source_bonus -= 0.65
+
+            # (4) Heavy anti-cardiology bias for derm / pharmacology / neurology
+            if specialty in _ANTI_CARDIO_SPECIALTIES:
+                pure_cardio = declared == "cardiology" or (
+                    cardio_hits >= 2 and own_hits == 0
+                )
+                if pure_cardio and not is_current:
+                    source_bonus -= 0.85
+                    spec_rel = min(spec_rel, 0.15)
+                elif cardio_hits >= 3 and own_hits <= 1 and not is_current:
+                    source_bonus -= 0.45
+                # Extra boost when own specialty lexicon is rich
+                if own_hits >= 2:
+                    source_bonus += 0.15
+                if own_hits >= 4:
+                    source_bonus += 0.10
 
         combined = (
-            0.25 * base
-            + 0.20 * q_rel
-            + 0.35 * spec_rel
+            0.20 * base
+            + 0.18 * q_rel
+            + 0.40 * spec_rel
             + source_bonus
         )
         # Cap

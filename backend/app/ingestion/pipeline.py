@@ -182,8 +182,13 @@ class IngestionPipeline:
 
         return att
 
-    def seed_sample_knowledge(self) -> Dict[str, Any]:
-        """Load sample clinical snippets if KB is empty."""
+    def seed_sample_knowledge(self, *, force: bool = False) -> Dict[str, Any]:
+        """Load sample clinical snippets if KB is empty (or always when force=True).
+
+        Use force=True after updating clinical_snippets.md / drug_interactions.csv
+        so specialty-tagged digoxin/SCAR content is indexed even when the store
+        already has points.
+        """
         sample_dir = settings.sample_data_dir
         sample_dir.mkdir(parents=True, exist_ok=True)
         sample_file = sample_dir / "clinical_snippets.md"
@@ -191,7 +196,7 @@ class IngestionPipeline:
             sample_file.write_text(_DEFAULT_SAMPLE_KB, encoding="utf-8")
 
         store_count = self.retriever.store.count()
-        if store_count > 0:
+        if store_count > 0 and not force:
             return {"skipped": True, "existing_points": store_count}
 
         total = 0
@@ -203,7 +208,12 @@ class IngestionPipeline:
             elif path.suffix.lower() in {".txt", ".pdf", ".csv"}:
                 r = self.ingest_file(path, source_type="sample", tags=["sample"])
                 total += r.get("chunks_indexed", 0)
-        return {"skipped": False, "chunks_indexed": total}
+        return {
+            "skipped": False,
+            "chunks_indexed": total,
+            "force": force,
+            "previous_points": store_count,
+        }
 
     def _ingest_sample_markdown(self, path: Path) -> int:
         """Split sample KB by ## sections and tag specialty for cleaner retrieval."""
@@ -262,25 +272,45 @@ def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
 
 def _section_specialty(text: str) -> str:
     t = text.lower()
-    if any(k in t for k in ("cardiology", "stemi", "acs", "heart failure", "atrial")):
-        return "cardiology"
-    if any(k in t for k in ("dermatology", "melanoma", "psoriasis", "rash")):
-        return "dermatology"
-    if any(k in t for k in ("neurology", "stroke", "seizure", "migraine")):
-        return "neurology"
+    # Prefer section title cues first (first line / heading words)
     if any(
         k in t
         for k in (
             "pharmacology",
-            "drug",
+            "drug safety",
+            "drug list",
+            "digoxin",
+            "drug interaction",
             "warfarin",
-            "interaction",
-            "dosing",
+            "polypharmacy",
         )
     ):
         return "clinical_pharmacology"
+    if any(
+        k in t
+        for k in (
+            "dermatology",
+            "melanoma",
+            "psoriasis",
+            "sjs",
+            "dress",
+            "agep",
+            "cutaneous",
+        )
+    ):
+        return "dermatology"
+    if any(k in t for k in ("neurology", "stroke", "seizure", "migraine")):
+        return "neurology"
+    if any(k in t for k in ("cardiology", "stemi", "acs", "heart failure", "atrial")):
+        return "cardiology"
     if any(k in t for k in ("internal medicine", "sepsis", "hyponatremia", "diabetes")):
         return "general_internal_medicine"
+    if any(k in t for k in ("rash", "drug", "interaction", "dosing", "toxicity")):
+        # Body-only weak cues
+        if any(k in t for k in ("rash", "sjs", "blister", "mucosal")):
+            return "dermatology"
+        if any(k in t for k in ("interaction", "dosing", "toxicity", "digoxin")):
+            return "clinical_pharmacology"
     return ""
 
 
@@ -296,6 +326,8 @@ _DEFAULT_SAMPLE_KB = """# Sample Clinical Knowledge Base (Demo)
 - Melanoma ABCDE: Asymmetry, Border irregularity, Color variation, Diameter >6mm, Evolving.
 - Cellulitis vs erysipelas: deeper dermal/subcutis vs superficial; systemic signs guide antibiotics.
 - Psoriasis: well-demarcated plaques with silvery scale; consider topical steroids / biologics.
+- SJS/TEN: severe cutaneous adverse reaction often 4–28 days after high-risk drugs (carbamazepine, allopurinol, lamotrigine, sulfa); painful rash, mucosal involvement; stop culprit; burn-unit care.
+- DRESS and AGEP: delayed multi-organ drug hypersensitivity vs acute pustular drug eruption — withdraw culprit drug urgently.
 
 ## Neurology
 - Stroke FAST: Face droop, Arm weakness, Speech difficulty, Time to call emergency.
@@ -313,6 +345,8 @@ _DEFAULT_SAMPLE_KB = """# Sample Clinical Knowledge Base (Demo)
 - QT-prolonging drugs: macrolides, fluoroquinolones, some antipsychotics — check interactions.
 - Renal dosing: adjust metformin, DOACs, many antibiotics for reduced eGFR.
 - Penicillin allergy: clarify reaction type; many reported allergies are not IgE-mediated.
+- Digoxin toxicity: narrow therapeutic index; nausea, xanthopsia, bradycardia/arrhythmias; check level and electrolytes; hold digoxin; consider Fab for severe toxicity.
+- Digoxin + clarithromycin: major P-gp interaction raising digoxin levels — avoid or monitor closely.
 
 ## Drug list (sample)
 | Drug | Class | Key caution |

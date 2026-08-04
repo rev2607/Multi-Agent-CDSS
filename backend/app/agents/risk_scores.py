@@ -304,10 +304,35 @@ def compute_timi_ua_nstemi(case: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def is_primary_acs_evaluation(case: Dict[str, Any]) -> bool:
+    """HEART/TIMI gate — True only when ACS hard rules own the case."""
+    from app.agents.case_patterns import (
+        is_primary_acs_evaluation as _shared_primary_acs,
+    )
+
+    return _shared_primary_acs(case)
+
+
 def acs_risk_block(case: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute HEART/TIMI ONLY when is_primary_acs_evaluation is True.
+
+    Image findings may still be returned for context; scores stay empty otherwise.
+    """
+    images = extract_image_findings(case)
+    if not is_primary_acs_evaluation(case):
+        return {
+            "heart": None,
+            "timi": None,
+            "image_findings": images,
+            "high_risk_acs_pattern": False,
+            "acs_scores_applicable": False,
+            "acs_scores_omitted_reason": (
+                "HEART/TIMI omitted — not primary ACS (hard gate)"
+            ),
+        }
+
     heart = compute_heart_score(case)
     timi = compute_timi_ua_nstemi(case)
-    images = extract_image_findings(case)
     text = _blob(case).lower()
     high_risk_acs = (
         ("troponin" in text and any(x in text for x in ("elevat", "positive", "0.0")))
@@ -318,4 +343,6 @@ def acs_risk_block(case: Dict[str, Any]) -> Dict[str, Any]:
         "timi": timi,
         "image_findings": images,
         "high_risk_acs_pattern": high_risk_acs,
+        "acs_scores_applicable": True,
+        "acs_scores_omitted_reason": "",
     }
