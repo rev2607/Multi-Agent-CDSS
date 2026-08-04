@@ -61,12 +61,36 @@ class BaseSpecialistAgent:
         blob = self.build_case_blob(case)
         query = self._make_query(blob)
         evidence_k = getattr(settings, "evidence_top_k", DEFAULT_EVIDENCE_K)
+        case_id = str(case.get("id") or "") or None
+        logger.info(
+            "agent_retrieve: specialist=%s case_id=%s evidence_k=%s query=%.100s",
+            self.specialist.value,
+            case_id,
+            evidence_k,
+            query.replace("\n", " "),
+        )
         result = self.agentic.run(
             query,
             case_context=blob,
             force=force_agentic,
             specialty=self.specialist.value,
+            case_id=case_id,
+            case=case,
             evidence_k=evidence_k,
+        )
+        hits = result.get("hits") or []
+        logger.info(
+            "agent_retrieve_done: specialist=%s case_id=%s path=%s n_hits=%s titles=%s",
+            self.specialist.value,
+            case_id,
+            result.get("path"),
+            len(hits),
+            [
+                ((h.metadata or {}).get("title") or (h.metadata or {}).get("filename") or h.id)[
+                    :50
+                ]
+                for h in hits
+            ],
         )
         return result
 

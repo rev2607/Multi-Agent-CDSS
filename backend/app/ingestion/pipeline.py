@@ -54,6 +54,21 @@ class IngestionPipeline:
                 payload.update({k: v for k, v in extra_payload.items() if k != "text"})
             if path:
                 payload["path"] = path
+            # Normalize ownership: case docs require case_id; shared KB stamped "shared"
+            st = str(payload.get("source_type") or source_type).lower()
+            cid = payload.get("case_id")
+            if st in {"case_attachment", "case_text"} or str(payload.get("scope") or "") == "case":
+                payload["scope"] = "case"
+                if not cid:
+                    logger.warning(
+                        "ingest_text: case-scoped doc missing case_id title=%s",
+                        title[:80],
+                    )
+            else:
+                # Shared knowledge base
+                if not cid:
+                    payload["case_id"] = "shared"
+                payload.setdefault("scope", "shared")
             payloads.append(payload)
 
         ids = self.retriever.index_texts(chunks, payloads)
@@ -145,9 +160,10 @@ class IngestionPipeline:
                     tags=["case", case_id, modality],
                     extra_payload={
                         "modality": modality,
-                        "case_id": case_id,
+                        "case_id": str(case_id),
                         "filename": filename,
                         "attachment_id": att["id"],
+                        "scope": "case",
                     },
                     path=str(file_path),
                 )

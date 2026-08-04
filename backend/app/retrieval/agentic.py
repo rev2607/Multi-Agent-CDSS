@@ -1,8 +1,4 @@
-"""Bounded Agentic RAG — opt-in secondary path with hard budgets.
-
-Same hybrid indexes as Pipeline Hybrid RAG; different driving style only.
-Never always-on. Gated by complexity / weak first retrieve.
-"""
+"""Bounded Agentic RAG — opt-in secondary path with hard budgets."""
 
 from __future__ import annotations
 
@@ -14,14 +10,16 @@ from app.core.config import settings
 from app.core.llm import get_llm_client
 from app.models.schemas import RetrievalHit
 from app.retrieval.hybrid import DEFAULT_EVIDENCE_K, HybridRetriever
-from app.retrieval.postprocess import dedupe_hits, filter_and_rank_hits
+from app.retrieval.postprocess import (
+    dedupe_hits,
+    filter_and_rank_hits,
+    inject_case_attachments,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class BoundedAgenticRAG:
-    """Plan → tool retrieve → grade → stop, with max_steps + wall-clock."""
-
     def __init__(self, retriever: Optional[HybridRetriever] = None) -> None:
         self.retriever = retriever or HybridRetriever()
         self.llm = get_llm_client()
@@ -68,33 +66,53 @@ class BoundedAgenticRAG:
         case_context: str = "",
         force: bool = False,
         specialty: Optional[str] = None,
+        case_id: Optional[str] = None,
+        case: Optional[Dict[str, Any]] = None,
         evidence_k: int = DEFAULT_EVIDENCE_K,
     ) -> Dict[str, Any]:
-        """Execute retrieval (pipeline default; bounded agentic when gated)."""
         t0 = time.monotonic()
+        case = case or {}
+        case_id = case_id or case.get("id")
+
         first = self.retriever.search(
             query,
             specialty=specialty,
+            case_id=case_id,
             evidence_k=max(evidence_k, 8),
             apply_postprocess=True,
         )
-        use, reason = self.should_use_agentic(
-            query=query, first_hits=first, force=force
-        )
-        if not use:
-            cleaned = filter_and_rank_hits(
+        # Ensure current attachments are visible
+        if case:
+            first = inject_case_attachments(first, case=case)
+            first = filter_and_rank_hits(
                 first,
                 query=query,
                 specialty=specialty,
+                case_id=case_id,
                 max_hits=evidence_k,
             )
+
+        use, reason = self.should_use_agentic(
+            query=query, first_hits=first, force=force
+        )
+        logger.info(
+            "retrieval_path_decision: use_agentic=%s reason=%s specialty=%s case_id=%s hits=%s",
+            use,
+            reason,
+            specialty,
+            case_id,
+            len(first),
+        )
+
+        if not use:
             return {
                 "path": "pipeline_hybrid",
                 "reason": reason,
-                "hits": cleaned,
+                "hits": first[:evidence_k],
                 "steps": 0,
                 "queries": [query],
                 "specialty": specialty,
+                "case_id": case_id,
             }
 
         all_hits: Dict[str, RetrievalHit] = {h.id: h for h in first}
@@ -119,6 +137,7 @@ class BoundedAgenticRAG:
             new_hits = self.retriever.search(
                 next_q,
                 specialty=specialty,
+                case_id=case_id,
                 evidence_k=max(evidence_k, 8),
             )
             for h in new_hits:
@@ -129,11 +148,14 @@ class BoundedAgenticRAG:
             if grade >= 0.7:
                 break
 
-        merged = dedupe_hits(list(all_hits.values()))
+        merged = list(all_hits.values())
+        if case:
+            merged = inject_case_attachments(merged, case=case)
         top = filter_and_rank_hits(
-            merged,
+            dedupe_hits(merged),
             query=query,
             specialty=specialty,
+            case_id=case_id,
             max_hits=evidence_k,
         )
         return {
@@ -144,6 +166,7 @@ class BoundedAgenticRAG:
             "queries": queries,
             "elapsed_sec": round(time.monotonic() - t0, 3),
             "specialty": specialty,
+            "case_id": case_id,
         }
 
     def _plan_next_query(
@@ -157,11 +180,9 @@ class BoundedAgenticRAG:
     ) -> str:
         focus = specialty.replace("_", " ") if specialty else "clinical"
         system = (
-            f"You are a medical retrieval planner focused on {focus}. "
-            "Given a clinical question and prior retrieval attempts, propose ONE short "
-            "follow-up search query that fills evidence gaps in THIS specialty. "
-            "Avoid unrelated specialties. Return only the query text. "
-            "If enough evidence exists, return exactly: STOP"
+            f"You are a medical retrieval planner focused on {focus} only. "
+            "Propose ONE short follow-up search query for THIS specialty. "
+            "Do not pull other specialties. Return query text only, or STOP."
         )
         user = (
             f"Original question:\n{original}\n\n"

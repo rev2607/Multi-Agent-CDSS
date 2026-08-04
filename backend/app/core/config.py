@@ -97,9 +97,9 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     enable_rerank: bool = False
     dense_vector_size: int = 768
-    # Evidence quality (post RRF)
+    # Evidence quality (post RRF): top 4–6 specialty-matched, case-isolated chunks
     evidence_top_k: int = 5
-    retrieval_min_relevance: float = 0.18
+    retrieval_min_relevance: float = 0.22
     agentic_max_steps: int = 3
     agentic_wall_clock_sec: int = 45
     agentic_weak_hit_threshold: float = 0.25

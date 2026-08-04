@@ -70,7 +70,8 @@ def create_case(body: CaseCreate):
         clinical_text=body.clinical_text,
         notes=body.notes,
     )
-    # Best-effort index — case creation must not fail if Qdrant/embeddings are down
+    # Best-effort index — case creation must not fail if Qdrant/embeddings are down.
+    # Always stamp case_id for isolation from other cases at retrieval time.
     if body.clinical_text.strip():
         try:
             get_ingestion_pipeline().ingest_text(
@@ -78,7 +79,11 @@ def create_case(body: CaseCreate):
                 title=f"Case text — {body.title}",
                 source_type="case_text",
                 tags=["case", case["id"]],
-                extra_payload={"case_id": case["id"], "modality": "text"},
+                extra_payload={
+                    "case_id": str(case["id"]),
+                    "modality": "text",
+                    "scope": "case",
+                },
             )
         except Exception as e:
             logger.warning("Case text KB index skipped: %s", e)

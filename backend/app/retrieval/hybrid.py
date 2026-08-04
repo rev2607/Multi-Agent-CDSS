@@ -1,4 +1,4 @@
-"""Pipeline Hybrid RAG: dense + sparse → RRF → specialty filter → dedupe → top-N."""
+"""Pipeline Hybrid RAG: dense + sparse → RRF → specialty/case filters → dedupe → top-N."""
 
 from __future__ import annotations
 
@@ -9,12 +9,16 @@ from app.core.config import settings
 from app.core.llm import get_llm_client
 from app.db.qdrant_store import get_qdrant_store
 from app.models.schemas import EvidenceItem, RetrievalHit
+from app.retrieval.filters import (
+    case_isolation_filter,
+    merge_filters,
+    specialty_prefer_filter,
+)
 from app.retrieval.postprocess import filter_and_rank_hits
 from app.retrieval.sparse import SparseEncoder
 
 logger = logging.getLogger(__name__)
 
-# Evidence shown to clinicians / LLM after cleanup
 DEFAULT_EVIDENCE_K = 5
 
 
@@ -24,15 +28,13 @@ def reciprocal_rank_fusion(
     k: int = 60,
     scores_map: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> List[tuple[str, float]]:
-    """RRF over ordered id lists. Returns [(id, rrf_score), ...] sorted desc."""
     fused: Dict[str, float] = {}
     for ranking in ranked_lists:
         for rank, doc_id in enumerate(ranking, start=1):
             fused[doc_id] = fused.get(doc_id, 0.0) + 1.0 / (k + rank)
     if scores_map:
         for doc_id, parts in scores_map.items():
-            bonus = 0.05 * sum(parts.values())
-            fused[doc_id] = fused.get(doc_id, 0.0) + bonus
+            fused[doc_id] = fused.get(doc_id, 0.0) + 0.05 * sum(parts.values())
     return sorted(fused.items(), key=lambda x: x[1], reverse=True)
 
 
@@ -70,6 +72,7 @@ class HybridRetriever:
         filters: Any = None,
         use_rerank: Optional[bool] = None,
         specialty: Optional[str] = None,
+        case_id: Optional[str] = None,
         evidence_k: Optional[int] = None,
         min_relevance: Optional[float] = None,
         apply_postprocess: bool = True,
@@ -79,21 +82,83 @@ class HybridRetriever:
         min_relevance = (
             min_relevance
             if min_relevance is not None
-            else getattr(settings, "retrieval_min_relevance", 0.18)
+            else getattr(settings, "retrieval_min_relevance", 0.22)
         )
-        # Over-fetch so specialty filter / dedupe still leave enough candidates
-        fetch_k = max(top_k * 4, evidence_k * 6, 24)
+        fetch_k = max(top_k * 4, evidence_k * 8, 32)
 
-        # Specialty-biased query expansion (lexical assist for sparse channel)
         search_query = query
         if specialty:
             search_query = f"{query} {specialty.replace('_', ' ')}"
 
+        # Case isolation + specialty preference at Qdrant layer
+        q_filter = merge_filters(
+            filters,
+            case_isolation_filter(case_id),
+            specialty_prefer_filter(specialty),
+        )
+
+        logger.info(
+            "hybrid_search: specialty=%s case_id=%s fetch_k=%s query=%.80s",
+            specialty,
+            case_id,
+            fetch_k,
+            query.replace("\n", " "),
+        )
+
         dense_q = self.llm.embed_query(search_query)
         sparse_q = self.sparse.encode(search_query)
 
-        dense_hits = self.store.search_dense(dense_q, limit=fetch_k, filters=filters)
-        sparse_hits = self.store.search_sparse(sparse_q, limit=fetch_k, filters=filters)
+        # Always enforce case isolation at the Qdrant layer when possible.
+        # On filter failure: fall back to case-isolation-only, NEVER fully unfiltered
+        # without a second isolation pass (postprocess still runs).
+        case_only = merge_filters(filters, case_isolation_filter(case_id))
+        try:
+            dense_hits = self.store.search_dense(
+                dense_q, limit=fetch_k, filters=q_filter
+            )
+            sparse_hits = self.store.search_sparse(
+                sparse_q, limit=fetch_k, filters=q_filter
+            )
+        except Exception as e:
+            logger.warning(
+                "hybrid_search: combined filter failed (%s); retrying case-isolation only",
+                e,
+            )
+            try:
+                dense_hits = self.store.search_dense(
+                    dense_q, limit=fetch_k, filters=case_only
+                )
+                sparse_hits = self.store.search_sparse(
+                    sparse_q, limit=fetch_k, filters=case_only
+                )
+            except Exception as e2:
+                logger.warning(
+                    "hybrid_search: case filter failed (%s); "
+                    "unfiltered fetch + STRICT postprocess isolation",
+                    e2,
+                )
+                dense_hits = self.store.search_dense(
+                    dense_q, limit=fetch_k, filters=None
+                )
+                sparse_hits = self.store.search_sparse(
+                    sparse_q, limit=fetch_k, filters=None
+                )
+
+        # If specialty preference over-constrained, retry with case isolation only
+        if len(dense_hits) + len(sparse_hits) < 3 and specialty:
+            logger.info(
+                "hybrid_search: sparse results with specialty filter; "
+                "retrying case-isolation only"
+            )
+            try:
+                dense_hits = self.store.search_dense(
+                    dense_q, limit=fetch_k, filters=case_only
+                )
+                sparse_hits = self.store.search_sparse(
+                    sparse_q, limit=fetch_k, filters=case_only
+                )
+            except Exception as e:
+                logger.warning("case-only filter failed: %s", e)
 
         dense_ids = [str(h.id) for h in dense_hits]
         sparse_ids = [str(h.id) for h in sparse_hits]
@@ -116,7 +181,7 @@ class HybridRetriever:
         )
 
         hits: List[RetrievalHit] = []
-        for doc_id, rrf_score in fused[: fetch_k]:
+        for doc_id, rrf_score in fused[:fetch_k]:
             payload = by_id.get(doc_id, {})
             hits.append(
                 RetrievalHit(
@@ -139,15 +204,23 @@ class HybridRetriever:
                 hits,
                 query=query,
                 specialty=specialty,
+                case_id=case_id,
                 min_relevance=min_relevance,
                 max_hits=evidence_k,
+                hard_specialty_filter=True,
             )
         else:
             hits = hits[:evidence_k]
+
+        logger.info(
+            "hybrid_search: returning %s hit(s) specialty=%s case_id=%s",
+            len(hits),
+            specialty,
+            case_id,
+        )
         return hits
 
     def _rerank(self, query: str, hits: List[RetrievalHit]) -> List[RetrievalHit]:
-        """Optional cross-encoder rerank; lexical specialty re-rank is always applied later."""
         try:
             from sentence_transformers import CrossEncoder
 
